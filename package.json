@@ -1,0 +1,20 @@
+{
+  "name": "scaffoldjest",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "bin":  "bin",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/inquirer": "^7.3.1",
+    "@types/node": "^15.3.0",
+    "typescript": "^4.2.4"
+  },
+  "dependencies": {
+    "chalk": "^4.1.1",
+    "commander": "^7.2.0",
+    "inquirer": "^8.0.0"
+  },
+  "scripts": {
+    "build": "tsc"
+  }
+}
