@@ -15,6 +15,7 @@
     "inquirer": "^8.0.0"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "postinstall": "yarn build && sudo ln -s \"$(pwd)/bin/index.js\" /usr/bin/scaffoldjest"
   }
 }
