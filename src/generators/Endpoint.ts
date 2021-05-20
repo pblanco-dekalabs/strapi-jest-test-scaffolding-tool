@@ -56,8 +56,15 @@ export interface Model {
     type?: string;
     model?: string;
     required?: boolean;
+    min?: number;
+    max?: number;
   }[];
 }
+
+const NUMERIC = ['integer', 'float', 'double', 'number', 'real'].reduce(
+  (o, n) => ({ ...o, [n]: n }),
+  {}
+);
 
 /**
  * A list of gathered models.
@@ -65,6 +72,33 @@ export interface Model {
 const models: Record<string, Model> = {};
 
 const dataSize = [...Array(1).keys()];
+
+/**
+ * Generates the attribute string value.
+ * @param attrib
+ * @returns
+ */
+function resolveAttribute(attrib: Model['attributes'][0], level: number) {
+  if (attrib.type === 'string') {
+    return `"string_${randomHex()}"`;
+  } else if (attrib.type === 'text') {
+    return `"text_${randomHex()}"`;
+  } else if (attrib.type in NUMERIC) {
+    const value = Math.round(Math.random() * 105845684);
+    if (value > attrib.max) {
+      return attrib.max.toString();
+    } else if (value < attrib.min) {
+      return attrib.min.toString();
+    }
+    return value.toString();
+  } else if (attrib.type === 'datetime') {
+    return new Date().toISOString();
+  } else if (attrib.model != null && level < 4) {
+    return expandModel(attrib.model, level + 1);
+  } else {
+    return `null`;
+  }
+}
 
 /**
  * Expands a model as random source code.
@@ -83,22 +117,8 @@ export function expandModel(name: string, level = 0): string {
     ' '.repeat(level) +
     '{\n' +
     model.attributes
-      .map((attrib) => {
-        if (attrib.type === 'string') {
-          return `${attrib.name}: "string_${randomHex()}"`;
-        } else if (attrib.type == 'number') {
-          return (
-            attrib.name +
-            ': ' +
-            Math.round(Math.random() * 105845684).toString()
-          );
-        } else if (attrib.model != null && level < 4) {
-          return attrib.name + ': ' + expandModel(attrib.model, level + 1);
-        } else {
-          return `${attrib.name}: null`;
-        }
-      })
-      .map((s) => '  '.repeat(level + 1) + s)
+      .map(attrib => `${attrib.name}: ${resolveAttribute(attrib, level)}`)
+      .map(s => '  '.repeat(level + 1) + s)
       .join(',\n') +
     '\n' +
     '  '.repeat(level) +
@@ -122,7 +142,7 @@ export async function getAllModels(list: string[]) {
       );
       models[dir] = {
         name: dir,
-        attributes: Object.keys(modelData.attributes).map((key) => {
+        attributes: Object.keys(modelData.attributes).map(key => {
           const attrib = modelData.attributes[key];
           return {
             name: key,
@@ -148,36 +168,41 @@ export async function generateTest(
   name: string,
   model: Model,
   permissions: string[],
-  controllers: ControllerData[]
+  controllers: ControllerData[],
+  useJWT: boolean
 ) {
   const prettyName = name[0].toUpperCase() + name.slice(1);
   const perms = permissions
-    .map((p) => `      'permissions.application.controllers.${name}.${p}'`)
+    .map(p => `      'permissions.application.controllers.${name}.${p}'`)
     .join(',\n');
   const mockData = dataSize.map(() => expandModel(model.name, 1)).join(',\n');
   const expected = model.attributes
-    .map((param) => {
+    .map(param => {
       if (param && param.model == null) {
         return `expect(response.body.${param.name}).toBe(data[0].${param.name})`;
       } else {
         return false;
       }
     })
-    .filter((s) => s)
-    .map((s) => `        ${s}`)
+    .filter(s => s)
+    .map(s => `        ${s}`)
     .join('\n');
   const testCode = controllers
-    .map((c) => {
+    .map(c => {
       return javascript`
   it('should ${c.description} (${c.method} ${c.path})', async (done) => {
     await request(strapi.server)
-      .post('${c.path}')
-      .send(data[0])
-      .expect('Content-Type', /json/)
+      .${c.method.toLowerCase()}('${c.path}')${
+        c.method === 'GET' ? '' : `\n      .send(data[0])`
+      }${
+        useJWT
+          ? `
+      .set('Authorization', 'Bearer ' + jwt)`
+          : ''
+      }
       .expect(200)
+      .expect('Content-Type', /json/)
       .then((response) => {
-        // TODO: Refine test data, generated from ${model.name} model.
-        // WARN: It might contain inaccurate tests.
         expect(response.body).toBeDefined()
 ${expected}
       })
@@ -195,13 +220,31 @@ const { grantPrivileges } = require('../helpers/strapi')
 const data = [
 ${mockData}
 ];
-
+${
+  useJWT
+    ? `
+let jwt // JWT Token for session
+`
+    : ''
+}
 describe('${prettyName}', () => {
   beforeAll(async (done) => {
+${
+  useJWT
+    ? `
+    const user = await strapi.plugins['users-permissions'].services.user.fetch({
+      username: 'tester2',
+      email: 'tester2@strapi.com',
+    })
+    jwt = strapi.plugins['users-permissions'].services.jwt.issue({
+      id: user.id,
+    })
+`
+    : ''
+}
     permissions = [
 ${perms}  ]
-    await grantPrivileges(2, permissions)
-
+    await grantPrivileges(${useJWT ? 'user.role.id' : 2}, permissions)
     done()
   })
   ${testCode}
@@ -214,7 +257,7 @@ ${perms}  ]
  * Yields a list of key+value pairs from object.
  */
 export function pairs(obj: Record<string, any>) {
-  return Object.keys(obj).map((k) => [k, obj[k]]);
+  return Object.keys(obj).map(k => [k, obj[k]]);
 }
 
 export async function inferPermissions(from: string) {
@@ -223,7 +266,7 @@ export async function inferPermissions(from: string) {
     const data = JSON.parse((await readFile(fp)).toString());
     return data.routes.map((r: any) => (r.handler as string).split('.')[1]);
   } catch (_) {
-    console.log(chalk.yellow`Couldn't infer permissions`)
+    console.log(chalk.yellow`Couldn't infer permissions`);
     return [];
   }
 }
@@ -240,6 +283,14 @@ const API_DIRECTORY = '../api';
  * @param list A list of controllers.
  */
 export async function generateAll(list: string[]) {
+  const { useJWT } = await inquirer.prompt<{ useJWT: boolean }>([
+    {
+      type: 'confirm',
+      default: true,
+      message: 'Generate JWT token code?',
+      name: 'useJWT',
+    },
+  ]);
   for (const dir of list) {
     const fp = path.join(API_DIRECTORY, dir);
     const docPath = path.join(fp, 'documentation', '1.0.0', `${dir}.json`);
@@ -258,16 +309,16 @@ export async function generateAll(list: string[]) {
           }
           return {
             path: url,
-            method,
+            method: method.toUpperCase(),
             description,
           } as ControllerData;
         });
       })
       .flat();
-    console.log(chalk.gray`Inferring permissions from ${dir} routes...`)
+    console.log(chalk.gray`Inferring permissions from ${dir} routes...`);
     const perms = await inferPermissions(fp);
     const m = models[dir] || { name: 'unknown', attributes: [] };
-    const out = await generateTest(dir, m, perms, cData);
+    const out = await generateTest(dir, m, perms, cData, useJWT);
     const outPath = path.join(dir, 'index.js');
     await writeFile(outPath, out);
     console.log(`✅ Generated ${dir} test stub`);
@@ -291,7 +342,7 @@ export default async function endpoint() {
         choices: dirs,
         name: 'included',
         message: 'Select the ones to include in the generation:',
-        default: dirs.filter((dir) => {
+        default: dirs.filter(dir => {
           try {
             fs.statSync(path.join(dir, 'index.js'));
             return false;
