@@ -3,7 +3,6 @@
  */
 import inquirer from 'inquirer';
 import chalk from 'chalk';
-import { javascript } from '../utils';
 import * as fs from 'fs';
 import { promisify } from 'util';
 import * as path from 'path';
@@ -58,13 +57,9 @@ export interface Model {
     required?: boolean;
     min?: number;
     max?: number;
+    repeatable?: boolean;
   }[];
 }
-
-const NUMERIC = ['integer', 'float', 'double', 'number', 'real'].reduce(
-  (o, n) => ({ ...o, [n]: n }),
-  {}
-);
 
 /**
  * A list of gathered models.
@@ -79,22 +74,43 @@ const dataSize = [...Array(1).keys()];
  * @returns
  */
 function resolveAttribute(attrib: Model['attributes'][0], level: number) {
-  if (attrib.type === 'string') {
-    return `"string_${randomHex()}"`;
-  } else if (attrib.type === 'text') {
-    return `"text_${randomHex()}"`;
-  } else if (attrib.type in NUMERIC) {
-    const value = Math.round(Math.random() * 105845684);
-    if (value > attrib.max) {
-      return attrib.max.toString();
-    } else if (value < attrib.min) {
-      return attrib.min.toString();
-    }
-    return value.toString();
-  } else if (attrib.type === 'datetime') {
-    return new Date().toISOString();
-  } else if (attrib.model != null && level < 4) {
-    return expandModel(attrib.model, level + 1);
+  if (attrib.repeatable) {
+    return '[]';
+  }
+  const numeric = Math.round(Math.random() * 105845684);
+  if (numeric > attrib.max) {
+    return attrib.max.toString();
+  } else if (numeric < attrib.min) {
+    return attrib.min.toString();
+  }
+  switch (attrib.type) {
+    case 'uid':
+      return `"${randomHex()}"`;
+    case 'string':
+      return `"string_${randomHex()}"`;
+    case 'text':
+      return `"text_${randomHex()}"`;
+    case 'integer':
+    case 'float':
+    case 'double':
+    case 'number':
+    case 'real':
+      return numeric.toString();
+    case 'biginteger':
+      return `"${numeric}"`
+    case 'json':
+      return '{}';
+    case 'boolean':
+      return `${Math.random() > 0.5}`;
+    case 'datetime':
+      return `new Date().toISOString()`;
+    case 'date':
+      return `new Date().toISOString().replace(/T.+/, '')`;
+  }
+  if (attrib.model != null /* && level < 4*/) {
+    // return expandModel(attrib.model, level + 1);
+    // This used to expand the model recursively, but found out that most endpoints expect and ID rather than a nested object.
+    return '1';
   } else {
     return `null`;
   }
@@ -145,9 +161,8 @@ export async function getAllModels(list: string[]) {
         attributes: Object.keys(modelData.attributes).map(key => {
           const attrib = modelData.attributes[key];
           return {
+            ...attrib,
             name: key,
-            type: attrib.type,
-            model: attrib.model,
           };
         }),
       };
@@ -161,6 +176,13 @@ export async function getAllModels(list: string[]) {
 }
 
 /**
+ * Given name for the variable to generate the code.
+ */
+const DATA_STUB_VARIABLE_NAME = 'dataStub';
+
+const LAST_ID_VARIABLE_NAME = 'lastEntityId';
+
+/**
  * Compiles the template and generates the test based on parameters.
  * @param name
  */
@@ -169,7 +191,8 @@ export async function generateTest(
   model: Model,
   permissions: string[],
   controllers: ControllerData[],
-  useJWT: boolean
+  useJWT: boolean,
+  useLastId: boolean
 ) {
   const prettyName = name[0].toUpperCase() + name.slice(1);
   const perms = permissions
@@ -178,8 +201,11 @@ export async function generateTest(
   const mockData = dataSize.map(() => expandModel(model.name, 1)).join(',\n');
   const expected = model.attributes
     .map(param => {
+      if (param && param.repeatable) {
+        return `expect(response.body.${param.name}).toStrictEqual(${DATA_STUB_VARIABLE_NAME}.${param.name})`;
+      }
       if (param && param.model == null) {
-        return `expect(response.body.${param.name}).toBe(data[0].${param.name})`;
+        return `expect(response.body.${param.name}).toBe(${DATA_STUB_VARIABLE_NAME}.${param.name})`;
       } else {
         return false;
       }
@@ -189,11 +215,15 @@ export async function generateTest(
     .join('\n');
   const testCode = controllers
     .map(c => {
-      return javascript`
+      return `
   it('should ${c.description} (${c.method} ${c.path})', async (done) => {
     await request(strapi.server)
-      .${c.method.toLowerCase()}('${c.path}')${
-        c.method === 'GET' ? '' : `\n      .send(data[0])`
+      .${c.method.toLowerCase()}(\`${
+        useLastId
+          ? c.path.replace(/\{id.*?\}/, '${' + LAST_ID_VARIABLE_NAME + '}')
+          : c.path
+      }\`)${
+        c.method === 'GET' ? '' : `\n      .send(${DATA_STUB_VARIABLE_NAME})`
       }${
         useJWT
           ? `
@@ -213,35 +243,46 @@ ${expected}
     })
     .join('');
   // TEMPLATE START //
-  return javascript`
+  return `
 const request = require('supertest')
 const { grantPrivileges } = require('../helpers/strapi')
 
-const data = [
-${mockData}
-];
+const ${DATA_STUB_VARIABLE_NAME} = ${mockData};
 ${
   useJWT
     ? `
 let jwt // JWT Token for session
 `
     : ''
-}
+}${
+    useLastId
+      ? `
+let ${LAST_ID_VARIABLE_NAME} // Store the last inserted entity's ID
+`
+      : ''
+  }
 describe('${prettyName}', () => {
   beforeAll(async (done) => {
 ${
   useJWT
-    ? `
-    const user = await strapi.plugins['users-permissions'].services.user.fetch({
+    ? `    const user = await strapi.plugins['users-permissions'].services.user.fetch({
       username: 'tester2',
       email: 'tester2@strapi.com',
     })
     jwt = strapi.plugins['users-permissions'].services.jwt.issue({
       id: user.id,
-    })
-`
+    })\n`
     : ''
+}    try {
+${
+  useLastId
+    ? `      const { id } = await strapi.services['${name}'].create(${DATA_STUB_VARIABLE_NAME})
+      ${LAST_ID_VARIABLE_NAME} = id`
+    : `await strapi.services['${name}'].create(${DATA_STUB_VARIABLE_NAME})`
 }
+    } catch ({code, errno, index, message, sql, sqlMessage, stack, sqlState}) {
+      fail(\`Failed to insert entity, reason: \${stack\}\`)
+    }
     permissions = [
 ${perms}  ]
     await grantPrivileges(${useJWT ? 'user.role.id' : 2}, permissions)
@@ -283,12 +324,18 @@ const API_DIRECTORY = '../api';
  * @param list A list of controllers.
  */
 export async function generateAll(list: string[]) {
-  const { useJWT } = await inquirer.prompt<{ useJWT: boolean }>([
+  const { useJWT, useLastId } = await inquirer.prompt<Record<string, boolean>>([
     {
       type: 'confirm',
       default: true,
       message: 'Generate JWT token code?',
       name: 'useJWT',
+    },
+    {
+      type: 'confirm',
+      default: true,
+      message: "Capture last entity's ID after insertion?",
+      name: 'useLastId',
     },
   ]);
   for (const dir of list) {
@@ -318,7 +365,7 @@ export async function generateAll(list: string[]) {
     console.log(chalk.gray`Inferring permissions from ${dir} routes...`);
     const perms = await inferPermissions(fp);
     const m = models[dir] || { name: 'unknown', attributes: [] };
-    const out = await generateTest(dir, m, perms, cData, useJWT);
+    const out = await generateTest(dir, m, perms, cData, useJWT, useLastId);
     const outPath = path.join(dir, 'index.js');
     await writeFile(outPath, out);
     console.log(`✅ Generated ${dir} test stub`);

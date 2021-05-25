@@ -3,7 +3,6 @@
  */
 import inquirer from 'inquirer';
 import chalk from 'chalk';
-import { javascript } from '../utils';
 import * as fs from 'fs';
 import { promisify } from 'util';
 
@@ -19,7 +18,7 @@ export function root(
   mockRedis: boolean
 ) {
   // TEMPLATE START //
-  return javascript`
+  return `
 const { setupStrapi } = require('./helpers/strapi')
 const knexCleaner = require('knex-cleaner')
 
@@ -33,7 +32,7 @@ return new Promise((resolve) => setTimeout(resolve, milliseconds))
 beforeAll(async (done) => {
     ${
       mockRedis
-        ? javascript`jest.mock('redis', () => jest.requireActual('redis-mock'))`
+        ? `jest.mock('redis', () => jest.requireActual('redis-mock'))`
         : ''
     }
     await setupStrapi() // singleton so it can be called many times
@@ -56,7 +55,7 @@ describe('Strapi in general', () => {
     })
 })
 
-${additional.map((s) => javascript`require('./${s}')`).join('\n')}
+${additional.map((s) => `require('./${s}')`).join('\n')}
 `;
   // TEMPLATE END //
 }
