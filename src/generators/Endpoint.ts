@@ -216,7 +216,7 @@ export async function generateTest(
   const testCode = controllers
     .map(c => {
       return `
-  it('should ${c.description} (${c.method} ${c.path})', async (done) => {
+  it('should ${c.description} (${c.method} ${c.path})', async () => {
     await request(strapi.server)
       .${c.method.toLowerCase()}(\`${
         useLastId
@@ -236,8 +236,6 @@ export async function generateTest(
         expect(response.body).toBeDefined()
 ${expected}
       })
-
-    done()
   })
 `;
     })
@@ -262,7 +260,7 @@ let ${LAST_ID_VARIABLE_NAME} // Store the last inserted entity's ID
       : ''
   }
 describe('${prettyName}', () => {
-  beforeAll(async (done) => {
+  beforeAll(async () => {
 ${
   useJWT
     ? `    const user = await strapi.plugins['users-permissions'].services.user.fetch({
@@ -286,7 +284,6 @@ ${
     permissions = [
 ${perms}  ]
     await grantPrivileges(${useJWT ? 'user.role.id' : 2}, permissions)
-    done()
   })
   ${testCode}
 })  
